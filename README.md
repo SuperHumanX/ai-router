@@ -188,4 +188,4 @@ for await (const event of router.stream({
 
 ## License
 
-MIT © Praveen Muppirala
+MIT © Prakash Muppirala
