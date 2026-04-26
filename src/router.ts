@@ -210,29 +210,34 @@ export class AIRouter {
    * transparently retries on the next available provider.
    */
   async *stream(params: AgentLoopParams): AsyncGenerator<StreamEvent> {
-    const { onRoundRobin, ...loopParams } = params;
+    const { onRoundRobin, modelOverride, ...loopParams } = params;
     const { provider, config } = await this.selectProvider(onRoundRobin);
 
     const enabled   = this.enabledProviders();
     const remaining = enabled.filter((p) => p !== provider);
 
+    // modelOverride takes precedence over the per-provider config model
+    const resolvedModel = modelOverride ?? this._modelFor(provider, config);
+
     yield { t: "provider", v: provider };
-    yield { t: "model",    v: this._modelFor(provider, config) };
+    yield { t: "model",    v: resolvedModel };
 
     try {
-      yield* this._runLoop(provider, config, loopParams);
+      yield* this._runLoop(provider, resolvedModel, loopParams);
       return;
     } catch (primaryErr) {
       console.error(`[ai-router] ${provider} failed:`, String(primaryErr));
     }
 
-    // Try remaining providers in order until one succeeds
+    // Try remaining providers in order until one succeeds.
+    // modelOverride is preserved on fallback — same domain context, different provider.
     for (const fallback of remaining) {
-      console.warn(`[ai-router] → falling back to ${fallback}`);
+      const fallbackModel = modelOverride ?? this._modelFor(fallback, config);
+      console.warn(`[ai-router] → falling back to ${fallback} (${fallbackModel})`);
       yield { t: "provider", v: fallback };
-      yield { t: "model",    v: this._modelFor(fallback, config) };
+      yield { t: "model",    v: fallbackModel };
       try {
-        yield* this._runLoop(fallback, config, loopParams);
+        yield* this._runLoop(fallback, fallbackModel, loopParams);
         return;
       } catch (err) {
         console.error(`[ai-router] ${fallback} also failed:`, String(err));
@@ -255,18 +260,14 @@ export class AIRouter {
 
   private _runLoop(
     provider: Provider,
-    config:   RouterConfig,
-    params:   Omit<AgentLoopParams, "onRoundRobin">,
+    model:    string,
+    params:   Omit<AgentLoopParams, "onRoundRobin" | "modelOverride">,
   ): AsyncGenerator<StreamEvent> {
     switch (provider) {
-      case "anthropic":
-        return anthropicLoop(this.anthropicClient!, config.anthropic_model, params);
-      case "openai":
-        return openaiCompatLoop(this.openaiClient!,  config.openai_model,    params);
-      case "gemini":
-        return openaiCompatLoop(this.geminiClient!,  config.gemini_model,    params);
-      case "local":
-        return openaiCompatLoop(this.localClient!,   config.local_model,     params);
+      case "anthropic": return anthropicLoop   (this.anthropicClient!, model, params);
+      case "openai":    return openaiCompatLoop(this.openaiClient!,    model, params);
+      case "gemini":    return openaiCompatLoop(this.geminiClient!,    model, params);
+      case "local":     return openaiCompatLoop(this.localClient!,     model, params);
     }
   }
 }

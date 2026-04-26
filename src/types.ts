@@ -107,6 +107,16 @@ export interface AgentLoopParams {
   toolExecutor:  ToolExecutor;
   /** Called after round-robin selects — use to persist last_provider. */
   onRoundRobin?: RoundRobinPersist;
+  /**
+   * Override the model for this specific call, bypassing the config's
+   * per-provider model setting. Useful for domain-specific models
+   * (e.g. "meditron" for health queries, "finllama" for finance) or
+   * one-off calls that need a different capability tier.
+   *
+   * The provider is still selected by the normal routing logic —
+   * only the model name is swapped.
+   */
+  modelOverride?: string;
 }
 
 /** Options passed to the AIRouter constructor. */
