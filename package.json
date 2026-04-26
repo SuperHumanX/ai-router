@@ -1,0 +1,49 @@
+{
+  "name": "@pmuppirala/ai-router",
+  "version": "0.1.0",
+  "description": "Provider-agnostic AI router: Anthropic · OpenAI · Gemini · Local (Ollama/LM Studio). Streaming, tool-use, weighted/round-robin routing, automatic fallback.",
+  "author": "Praveen Muppirala",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SuperHumanX/ai-router.git"
+  },
+  "keywords": [
+    "ai", "llm", "router", "anthropic", "openai", "gemini", "ollama",
+    "streaming", "agents", "tool-use", "fallback"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types":   "./dist/index.d.ts",
+      "import":  "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./env": {
+      "types":   "./dist/env.d.ts",
+      "import":  "./dist/env.js",
+      "require": "./dist/env.cjs"
+    }
+  },
+  "main":   "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types":  "./dist/index.d.ts",
+  "files":  ["dist", "README.md"],
+  "scripts": {
+    "build":           "tsup",
+    "dev":             "tsup --watch",
+    "typecheck":       "tsc --noEmit",
+    "prepublishOnly":  "npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "openai":            "^4.97.0"
+  },
+  "devDependencies": {
+    "tsup":       "^8.4.0",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
