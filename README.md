@@ -2,6 +2,123 @@
 
 > Provider-agnostic AI router with streaming, tool-use, and automatic fallback.
 
+This repo contains **two independent implementations** of the same routing concept:
+
+| | TypeScript (`src/`) | Python (`gateway.py`) |
+|---|---|---|
+| **Package** | `@pmuppirala/ai-router` (npm) | Drop-in single file |
+| **Used by** | Web frontends, Node.js services | CatalogValidator · portfolio_tracker · physician |
+| **Providers** | Anthropic · OpenAI · Gemini · Local | Anthropic · OpenAI · Local SLM |
+| **Routing** | weighted · round-robin · single · auto | weighted · round-robin · local-first · auto |
+| **Local LLM** | Ollama / LM Studio / vLLM | Ollama + mlx_lm.server (auto-detected) |
+
+---
+
+## Python Gateway (`gateway.py`)
+
+Single-file, zero-dependency LLM gateway for all Python projects. Copy into any project as `ai_router.py`.
+
+### Three-tier routing
+
+```
+Tier 1  Local SLM          probed at call time — free, private, no API cost
+          • mlx_lm.server   auto-detected when ":11435" or "mlx" in LOCAL_INTEL_URL
+          • Ollama           all other URLs → /api/chat
+
+Tier 2  Cloud (weighted)   automatic fallback when local is unreachable
+          • Anthropic Claude  AI_ROUTER_WEIGHT_ANTHROPIC (default 0.7)
+          • OpenAI GPT-4o     AI_ROUTER_WEIGHT_OPENAI    (default 0.3)
+
+Tier 3  Error              raises RuntimeError so callers can surface it
+```
+
+No flags, no restarts. The gateway probes `LOCAL_INTEL_URL` on every call. If the SLM is up, it's used for free. If it's down, cloud kicks in transparently.
+
+### Centralized key store
+
+All API keys live in **one place** — `~/Projects/ai-router/.env`. Projects never store cloud keys:
+
+```dotenv
+# ~/Projects/ai-router/.env  — the single source of truth
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-proj-...
+GEMINI_API_KEY=AIza...     # future
+GROK_API_KEY=xai-...       # future
+```
+
+Per-project `.env` only needs routing weights and the local SLM URL:
+
+```dotenv
+# CatalogValidator / portfolio_tracker / physician  — .env
+LOCAL_INTEL_URL=http://100.66.27.15:11435   # Tailscale IP of Mac SLM (omit to skip Tier 1)
+AI_ROUTER_MODE=weighted
+AI_ROUTER_WEIGHT_ANTHROPIC=0.7
+AI_ROUTER_WEIGHT_OPENAI=0.3
+```
+
+### Quick start
+
+```python
+from agents.ai_router import router, ChatMessage   # or catalog_router / finance_router / health_router
+
+# Multi-turn chat
+result = router.chat(
+    messages=[ChatMessage(role="user", content="Summarise this week's market moves.")],
+    system="You are a financial analyst.",
+    model_hint="smart",    # "fast" | "smart" | "structured"
+    max_tokens=800,
+)
+print(result.text)      # answer string
+print(result.provider)  # "local" | "anthropic" | "openai"
+print(result.model)     # e.g. "claude-sonnet-4-5"
+
+# Single-turn convenience (CatalogValidator style)
+cypher = router.complete(
+    system="You are a KuzuDB Cypher expert. Return only raw Cypher.",
+    user="Which suppliers stock more than 500 SKUs?",
+    task="cypher",         # "cypher"|"structured" → fast model
+                           # "summarize"|"analysis"|"general" → smart model
+)
+```
+
+### Domain aliases
+
+Each project imports the same singleton under a domain-specific name:
+
+```python
+from agents.ai_router import catalog_router   # CatalogValidator (retail)
+from agents.ai_router import finance_router   # portfolio_tracker (finance)
+from agents.ai_router import health_router    # physician (health)
+```
+
+### Deploying to a new project
+
+```bash
+cp ~/Projects/ai-router/gateway.py <project>/agents/ai_router.py
+# Set LOCAL_INTEL_URL + AI_ROUTER_* weights in project .env
+# API keys are picked up automatically from ~/Projects/ai-router/.env
+```
+
+### Env var reference (Python gateway)
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOCAL_INTEL_URL` | `http://localhost:11435` | Local SLM endpoint (empty = skip Tier 1) |
+| `OLLAMA_URL` | — | Alias for `LOCAL_INTEL_URL` (legacy) |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Model name for Ollama requests |
+| `AI_ROUTER_MODE` | `weighted` | `weighted` · `round-robin` · `anthropic` · `openai` · `local` · `auto` |
+| `AI_ROUTER_WEIGHT_ANTHROPIC` | `0.7` | Relative weight for Anthropic |
+| `AI_ROUTER_WEIGHT_OPENAI` | `0.3` | Relative weight for OpenAI |
+| `AI_ROUTER_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Fast/structured model |
+| `AI_ROUTER_ANTHROPIC_SMART` | `claude-sonnet-4-5` | Smart model |
+| `AI_ROUTER_OPENAI_MODEL` | `gpt-4o-mini` | Fast/structured model |
+| `AI_ROUTER_OPENAI_SMART` | `gpt-4o` | Smart model |
+| `AI_GATEWAY_CONFIG` | `~/Projects/ai-router/.env` | Override path for centralized key store |
+
+---
+
+## TypeScript Package (`src/`)
+
 Supports **Anthropic Claude · OpenAI GPT · Google Gemini · Local LLMs** (Ollama, LM Studio, vLLM).
 
 - 🔀 **4 routing modes**: single-provider, weighted random, round-robin, auto-fallback
@@ -12,7 +129,7 @@ Supports **Anthropic Claude · OpenAI GPT · Google Gemini · Local LLMs** (Olla
 
 ---
 
-## Install
+## Install (TypeScript)
 
 ```bash
 npm install @pmuppirala/ai-router
@@ -20,7 +137,7 @@ npm install @pmuppirala/ai-router
 
 ---
 
-## Quick start — env vars
+## Quick start — env vars (TypeScript)
 
 ```ts
 // router.ts
