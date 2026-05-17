@@ -107,6 +107,13 @@ except ImportError:
     _httpx    = None   # type: ignore[assignment]
     _HTTPX_OK = False
 
+try:
+    from google import genai as _genai
+    _GENAI_OK = True
+except ImportError:
+    _genai    = None   # type: ignore[assignment]
+    _GENAI_OK = False
+
 logger = logging.getLogger("ai_gateway")
 
 # ── Master key store ──────────────────────────────────────────────────────────
@@ -152,6 +159,8 @@ def _load_master_env() -> None:
 
 # ── Model defaults ────────────────────────────────────────────────────────────
 
+_GEM_FAST    = "gemini-2.5-flash"
+_GEM_SMART   = "gemini-2.5-pro"
 _ANT_FAST    = "claude-haiku-4-5"
 _ANT_SMART   = "claude-sonnet-4-5"
 _OAI_FAST    = "gpt-4o-mini"
@@ -218,12 +227,69 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 60) -> dic
 
 # ── Provider call implementations ─────────────────────────────────────────────
 
+def _call_gemini(
+    messages:   list[ChatMessage],
+    system:     str,
+    model:      str,
+    project:    str,
+    location:   str,
+    max_tokens: int,
+) -> RouterResponse:
+    """Call Gemini via Vertex AI using Application Default Credentials (ADC).
+
+    Gemini 2.5 models have thinking enabled by default. The SDK's response.text
+    shortcut can return None when thought parts are present, so we iterate
+    candidates and skip thought blocks explicitly.
+    """
+    if not _GENAI_OK:
+        raise RuntimeError("google-genai library not installed (pip install google-cloud-aiplatform)")
+    client = _genai.Client(vertexai=True, project=project, location=location)
+    contents = [{"role": m.role, "parts": [{"text": m.content}]}
+                for m in messages if m.role != "system"]
+    from google.genai import types as _gtypes
+    config = _gtypes.GenerateContentConfig(
+        system_instruction=system,
+        max_output_tokens=max_tokens,
+        temperature=0.1,
+        # Disable thinking for structured/fast calls — reduces latency & cost.
+        # Smart callers can override by passing a higher thinking_budget via config.
+        thinking_config=_gtypes.ThinkingConfig(thinking_budget=0),
+    )
+    response = client.models.generate_content(model=model, contents=contents, config=config)
+
+    # Extract text robustly: iterate parts, skip thought blocks
+    text = None
+    try:
+        text = response.text   # works when there are no thought parts
+    except Exception:
+        pass
+    if not text:
+        try:
+            for candidate in (response.candidates or []):
+                for part in (candidate.content.parts or []):
+                    if getattr(part, "thought", False):
+                        continue   # skip thinking block
+                    part_text = getattr(part, "text", None)
+                    if part_text:
+                        text = part_text
+                        break
+                if text:
+                    break
+        except Exception:
+            pass
+    text = text or "No response."
+
+    tokens = getattr(getattr(response, "usage_metadata", None), "candidates_token_count", None)
+    return RouterResponse(text=text, provider="gemini", model=model, tokens=tokens)
+
+
 def _call_anthropic(
     messages:   list[ChatMessage],
     system:     str,
     model:      str,
     api_key:    str,
     max_tokens: int,
+    tools:      Optional[list] = None,
 ) -> RouterResponse:
     payload = {
         "model":      model,
@@ -232,13 +298,18 @@ def _call_anthropic(
         "messages":   [{"role": m.role, "content": m.content}
                        for m in messages if m.role != "system"],
     }
+    if tools:
+        payload["tools"] = tools
     headers = {
         "Content-Type":      "application/json",
         "x-api-key":         api_key,
         "anthropic-version": "2023-06-01",
     }
     data   = _post_json("https://api.anthropic.com/v1/messages", payload, headers)
-    text   = data["content"][0]["text"]
+    # Collect all text blocks — tool_use responses interleave tool_use + text blocks
+    # so data["content"][0]["text"] crashes when index 0 is a tool_use block.
+    texts  = [b["text"] for b in (data.get("content") or []) if b.get("type") == "text"]
+    text   = "\n\n".join(texts) or "No response."
     tokens = data.get("usage", {}).get("output_tokens")
     return RouterResponse(text=text, provider="anthropic", model=model, tokens=tokens)
 
@@ -299,6 +370,11 @@ class AIGateway:
         self._http        = _httpx.Client(timeout=_LOCAL_TIMEOUT) if _HTTPX_OK else None
         self._mlx_model_id: Optional[str] = None   # resolved lazily
 
+        # ── Gemini / Vertex AI (ADC — no key needed) ──────────────────────────
+        self._gemini_project  = _env("GEMINI_PROJECT", "mcp-research-2026")
+        self._gemini_location = _env("GEMINI_LOCATION", "us-central1")
+        self._gemini_enabled  = _GENAI_OK and _env("GEMINI_ENABLED", "true").lower() != "false"
+
         # ── Cloud keys ────────────────────────────────────────────────────────
         self._anthropic_key = _env("ANTHROPIC_API_KEY")
         self._openai_key    = _env("OPENAI_API_KEY")
@@ -306,12 +382,18 @@ class AIGateway:
         # ── Routing config ────────────────────────────────────────────────────
         self.mode = _env("AI_ROUTER_MODE", "weighted").lower()
         self.weights: dict[str, float] = {
-            "anthropic": float(_env("AI_ROUTER_WEIGHT_ANTHROPIC", "0.7")),
-            "openai":    float(_env("AI_ROUTER_WEIGHT_OPENAI",    "0.3")),
+            "gemini":    float(_env("AI_ROUTER_WEIGHT_GEMINI",    "0.6")),
+            "anthropic": float(_env("AI_ROUTER_WEIGHT_ANTHROPIC", "0.3")),
+            "openai":    float(_env("AI_ROUTER_WEIGHT_OPENAI",    "0.1")),
         }
 
         # ── Models per provider ───────────────────────────────────────────────
         self.models = {
+            "gemini": {
+                "fast":       _env("AI_ROUTER_GEMINI_MODEL", _GEM_FAST),
+                "smart":      _env("AI_ROUTER_GEMINI_SMART", _GEM_SMART),
+                "structured": _env("AI_ROUTER_GEMINI_MODEL", _GEM_FAST),
+            },
             "anthropic": {
                 "fast":       _env("AI_ROUTER_ANTHROPIC_MODEL", _ANT_FAST),
                 "smart":      _env("AI_ROUTER_ANTHROPIC_SMART", _ANT_SMART),
@@ -416,6 +498,8 @@ class AIGateway:
 
     def _cloud_providers(self) -> list[str]:
         available = []
+        if self._gemini_enabled:
+            available.append("gemini")
         if self._anthropic_key:
             available.append("anthropic")
         if self._openai_key:
@@ -464,10 +548,14 @@ class AIGateway:
         model_hint: str,
         max_tokens: int,
         model_override: Optional[str],
+        tools:      Optional[list] = None,
     ) -> RouterResponse:
         model = model_override or self.models[provider][model_hint]
+        if provider == "gemini":
+            return _call_gemini(messages, system, model,
+                                self._gemini_project, self._gemini_location, max_tokens)
         if provider == "anthropic":
-            return _call_anthropic(messages, system, model, self._anthropic_key, max_tokens)
+            return _call_anthropic(messages, system, model, self._anthropic_key, max_tokens, tools=tools)
         if provider == "openai":
             return _call_openai(messages, system, model, self._openai_key, max_tokens)
         raise ValueError(f"Unknown provider: {provider}")
@@ -478,17 +566,33 @@ class AIGateway:
         self,
         messages:       list[ChatMessage],
         system:         str           = "You are a helpful assistant.",
-        model_hint:     str           = "fast",       # "fast" | "smart" | "structured"
+        model_hint:     str           = "fast",        # "fast" | "smart" | "structured"
         max_tokens:     int           = 800,
         model_override: Optional[str] = None,
         retries:        int           = 1,
+        tools:          Optional[list] = None,         # e.g. [{"type":"web_search_20250305","name":"web_search"}]
+        provider:       Optional[str] = None,          # pin to "anthropic" or "openai" for this call only
     ) -> RouterResponse:
         """
         Route a chat request.  Returns RouterResponse with .text, .provider, .model.
 
         Tier 1 — local LLM (skipped when mode="anthropic" or mode="openai").
         Tier 2 — cloud providers, weighted or round-robin.
+
+        Pass provider="anthropic" (or "openai") to pin a single call to that provider
+        without changing the global AI_ROUTER_MODE — useful when a tool (e.g. web_search)
+        is only supported by one provider.
         """
+        # Per-call provider pin — bypasses local tier and routing selection
+        if provider:
+            if provider not in self._cloud_providers():
+                key_var = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(provider, f"{provider.upper()}_API_KEY")
+                raise RuntimeError(
+                    f"AIGateway: pinned provider '{provider}' is not configured. "
+                    f"Add {key_var} to ~/Projects/ai-router/.env"
+                )
+            return self._call_cloud(provider, messages, system, model_hint, max_tokens, model_override, tools=tools)
+
         # Tier 1: local (unless pinned to a specific cloud provider)
         if self.mode not in ("anthropic", "openai"):
             local_result = self._call_local(messages, system, max_tokens)
@@ -507,15 +611,15 @@ class AIGateway:
         order   = [primary] + [p for p in providers if p != primary]
         last_err: Exception = RuntimeError("All providers failed.")
 
-        for attempt, provider in enumerate(order[: retries + 1]):
+        for attempt, prov in enumerate(order[: retries + 1]):
             try:
                 if attempt > 0:
-                    logger.info("falling back to %s", provider)
-                result = self._call_cloud(provider, messages, system, model_hint, max_tokens, model_override)
+                    logger.info("falling back to %s", prov)
+                result = self._call_cloud(prov, messages, system, model_hint, max_tokens, model_override, tools=tools)
                 logger.debug("cloud %s/%s served", result.provider, result.model)
                 return result
             except Exception as e:
-                logger.warning("%s failed: %s", provider, e)
+                logger.warning("%s failed: %s", prov, e)
                 last_err = e
                 time.sleep(0.5)
 
