@@ -35,13 +35,16 @@ export const DEFAULT_CONFIG: RouterConfig = {
   last_provider:   "openai",
   anthropic_model: "claude-opus-4-5",
   openai_model:    "gpt-4o",
-  gemini_model:    "gemini-2.0-flash",
+  gemini_model:    "google/gemini-2.5-flash",   // OpenRouter model ID (BYOK)
   local_model:     "llama3.2",
 };
 
-const DEFAULT_TTL_MS              = 10_000; // 10 s
-const GEMINI_OPENAI_COMPAT_BASE   = "https://generativelanguage.googleapis.com/v1beta/openai/";
-const OLLAMA_DEFAULT_BASE         = "http://localhost:11434/v1";
+const DEFAULT_TTL_MS       = 10_000; // 10 s
+// Gemini is reached via OpenRouter BYOK, not Google's own endpoint + a direct
+// key — same change applied to physician's gemini_helper.py (Python side).
+// The "google/" model prefix is OpenRouter's own model-ID convention.
+const OPENROUTER_BASE      = "https://openrouter.ai/api/v1";
+const OLLAMA_DEFAULT_BASE  = "http://localhost:11434/v1";
 
 // ── AIRouter ──────────────────────────────────────────────────────────────────
 
@@ -70,9 +73,12 @@ export class AIRouter {
       this.openaiClient = new OpenAI({ apiKey: options.openaiApiKey });
     }
     if (options.geminiApiKey) {
+      // "geminiApiKey" now means an OpenRouter key (BYOK) — the option name
+      // is kept for backward compat, since it still configures "the client
+      // used for the gemini provider slot."
       this.geminiClient = new OpenAI({
         apiKey:  options.geminiApiKey,
-        baseURL: GEMINI_OPENAI_COMPAT_BASE,
+        baseURL: OPENROUTER_BASE,
       });
     }
     // Local is enabled when localBaseUrl is set (even if empty key — Ollama needs none)

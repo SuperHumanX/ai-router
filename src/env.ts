@@ -11,7 +11,8 @@
  *   Provider keys:
  *     ANTHROPIC_API_KEY          Anthropic Claude
  *     OPENAI_API_KEY             OpenAI GPT
- *     GEMINI_API_KEY             Google Gemini
+ *     OPENROUTER_API_KEY         Google Gemini, via OpenRouter BYOK (not a
+ *                                direct Google key — see router.ts)
  *
  *   Local LLM (Ollama / LM Studio / vLLM):
  *     AI_ROUTER_LOCAL_BASE_URL   Default: http://localhost:11434/v1
@@ -31,7 +32,7 @@
  *   Model overrides:
  *     AI_ROUTER_ANTHROPIC_MODEL   Default: claude-opus-4-5
  *     AI_ROUTER_OPENAI_MODEL      Default: gpt-4o
- *     AI_ROUTER_GEMINI_MODEL      Default: gemini-2.0-flash
+ *     AI_ROUTER_GEMINI_MODEL      Default: google/gemini-2.5-flash (OpenRouter model ID)
  *     AI_ROUTER_LOCAL_MODEL       Default: llama3.2
  *
  *   Cache:
@@ -101,9 +102,9 @@ export function createRouterFromEnv(overrides?: Partial<AIRouterOptions>): AIRou
   const localBaseUrl = localBaseEnv !== undefined ? localBaseEnv : DEFAULT_CONFIG.local_model;
 
   return new AIRouter({
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
-    openaiApiKey:    process.env.OPENAI_API_KEY    ?? "",
-    geminiApiKey:    process.env.GEMINI_API_KEY    ?? "",
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY  ?? "",
+    openaiApiKey:    process.env.OPENAI_API_KEY     ?? "",
+    geminiApiKey:    process.env.OPENROUTER_API_KEY ?? "",   // Gemini via OpenRouter BYOK
     localBaseUrl:    localBaseUrl as string,
     configFetcher:   async () => configFromEnv(),
     configTtlMs:     envInt("AI_ROUTER_CACHE_TTL_MS") ?? 10_000,
