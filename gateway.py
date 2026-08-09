@@ -12,6 +12,11 @@ Three-tier routing
               → /api/chat
 
   Tier 2  Cloud providers      weighted or round-robin when local is unavailable
+            • Gemini            Vertex AI (ADC) first — draws down the GCP credit
+                                 pool; falls back to OpenRouter BYOK internally if
+                                 Vertex fails (billing not enabled, quota, ADC
+                                 missing, transient error). Enabled if either
+                                 backend is usable.
             • Anthropic         if ANTHROPIC_API_KEY is set
             • OpenAI            if OPENAI_API_KEY is set
 
@@ -283,6 +288,31 @@ def _call_gemini(
     return RouterResponse(text=text, provider="gemini", model=model, tokens=tokens)
 
 
+def _call_gemini_openrouter(
+    messages:   list[ChatMessage],
+    system:     str,
+    model:      str,
+    api_key:    str,
+    max_tokens: int,
+) -> RouterResponse:
+    """Gemini via OpenRouter BYOK — fallback when Vertex AI (ADC) fails or
+    isn't billing-enabled. Same OpenAI-compat shape as _call_openai, pointed
+    at OpenRouter with the "google/<model>" model-ID prefix it expects."""
+    all_msgs = [{"role": "system", "content": system}] + [
+        {"role": m.role, "content": m.content}
+        for m in messages if m.role != "system"
+    ]
+    payload = {"model": f"google/{model}", "messages": all_msgs, "max_tokens": max_tokens}
+    headers = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    data   = _post_json("https://openrouter.ai/api/v1/chat/completions", payload, headers)
+    text   = data["choices"][0]["message"]["content"]
+    tokens = data.get("usage", {}).get("completion_tokens")
+    return RouterResponse(text=text, provider="gemini", model=model, tokens=tokens)
+
+
 def _call_anthropic(
     messages:   list[ChatMessage],
     system:     str,
@@ -370,10 +400,17 @@ class AIGateway:
         self._http        = _httpx.Client(timeout=_LOCAL_TIMEOUT) if _HTTPX_OK else None
         self._mlx_model_id: Optional[str] = None   # resolved lazily
 
-        # ── Gemini / Vertex AI (ADC — no key needed) ──────────────────────────
-        self._gemini_project  = _env("GEMINI_PROJECT", "mcp-research-2026")
-        self._gemini_location = _env("GEMINI_LOCATION", "us-central1")
-        self._gemini_enabled  = _GENAI_OK and _env("GEMINI_ENABLED", "true").lower() != "false"
+        # ── Gemini / Vertex AI (ADC — no key needed), OpenRouter BYOK fallback ──
+        # Vertex is tried first when available (draws down GCP credit pools);
+        # OpenRouter is the fallback when Vertex fails for any reason (billing
+        # not enabled on the project, quota, transient error, ADC missing).
+        # "gemini" is enabled as a provider slot if EITHER path is usable —
+        # _call_cloud() decides per-call which one actually serves the request.
+        self._gemini_project    = _env("GEMINI_PROJECT", "mcp-research-2026")
+        self._gemini_location   = _env("GEMINI_LOCATION", "us-central1")
+        self._vertex_available  = _GENAI_OK and _env("GEMINI_ENABLED", "true").lower() != "false"
+        self._openrouter_key    = _env("OPENROUTER_API_KEY")
+        self._gemini_enabled    = self._vertex_available or bool(self._openrouter_key)
 
         # ── Cloud keys ────────────────────────────────────────────────────────
         self._anthropic_key = _env("ANTHROPIC_API_KEY")
@@ -552,8 +589,20 @@ class AIGateway:
     ) -> RouterResponse:
         model = model_override or self.models[provider][model_hint]
         if provider == "gemini":
-            return _call_gemini(messages, system, model,
-                                self._gemini_project, self._gemini_location, max_tokens)
+            # Vertex first (leverages the GCP credit pool); OpenRouter BYOK is
+            # the fallback, tried only on failure — not a weighted choice, since
+            # from the caller's perspective this is still "the gemini provider."
+            if self._vertex_available:
+                try:
+                    return _call_gemini(messages, system, model,
+                                        self._gemini_project, self._gemini_location, max_tokens)
+                except Exception as e:
+                    if not self._openrouter_key:
+                        raise
+                    logger.warning("Vertex AI call failed (%s) — falling back to OpenRouter BYOK", e)
+            if not self._openrouter_key:
+                raise RuntimeError("AIGateway: gemini provider has no working backend (Vertex failed/unavailable, no OPENROUTER_API_KEY).")
+            return _call_gemini_openrouter(messages, system, model, self._openrouter_key, max_tokens)
         if provider == "anthropic":
             return _call_anthropic(messages, system, model, self._anthropic_key, max_tokens, tools=tools)
         if provider == "openai":
