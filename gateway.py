@@ -406,7 +406,7 @@ class AIGateway:
         # not enabled on the project, quota, transient error, ADC missing).
         # "gemini" is enabled as a provider slot if EITHER path is usable —
         # _call_cloud() decides per-call which one actually serves the request.
-        self._gemini_project    = _env("GEMINI_PROJECT", "gen-lang-client-0222508108")
+        self._gemini_project    = _env("GEMINI_PROJECT", "gen-lang-client-0271077908")
         self._gemini_location   = _env("GEMINI_LOCATION", "us-central1")
         self._vertex_available  = _GENAI_OK and _env("GEMINI_ENABLED", "true").lower() != "false"
         self._openrouter_key    = _env("OPENROUTER_API_KEY")
