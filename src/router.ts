@@ -37,6 +37,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
   openai_model:    "gpt-4o",
   gemini_model:    "google/gemini-2.5-flash",   // OpenRouter model ID (BYOK)
   local_model:     "llama3.2",
+  local_domain:    "",   // set (e.g. "health") to route the local gateway's LoRA
 };
 
 const DEFAULT_TTL_MS       = 10_000; // 10 s
@@ -229,7 +230,7 @@ export class AIRouter {
     yield { t: "model",    v: resolvedModel };
 
     try {
-      yield* this._runLoop(provider, resolvedModel, loopParams);
+      yield* this._runLoop(provider, resolvedModel, loopParams, config.local_domain);
       return;
     } catch (primaryErr) {
       console.error(`[ai-router] ${provider} failed:`, String(primaryErr));
@@ -243,7 +244,7 @@ export class AIRouter {
       yield { t: "provider", v: fallback };
       yield { t: "model",    v: fallbackModel };
       try {
-        yield* this._runLoop(fallback, fallbackModel, loopParams);
+        yield* this._runLoop(fallback, fallbackModel, loopParams, config.local_domain);
         return;
       } catch (err) {
         console.error(`[ai-router] ${fallback} also failed:`, String(err));
@@ -268,12 +269,14 @@ export class AIRouter {
     provider: Provider,
     model:    string,
     params:   Omit<AgentLoopParams, "onRoundRobin" | "modelOverride">,
+    domain?:  string,
   ): AsyncGenerator<StreamEvent> {
     switch (provider) {
       case "anthropic": return anthropicLoop   (this.anthropicClient!, model, params);
       case "openai":    return openaiCompatLoop(this.openaiClient!,    model, params);
       case "gemini":    return openaiCompatLoop(this.geminiClient!,    model, params);
-      case "local":     return openaiCompatLoop(this.localClient!,     model, params);
+      // Only the local gateway consumes `domain` (to hot-swap the right LoRA).
+      case "local":     return openaiCompatLoop(this.localClient!,     model, params, domain);
     }
   }
 }

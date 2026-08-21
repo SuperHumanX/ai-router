@@ -35,6 +35,9 @@ export interface RouterConfig {
   openai_model:    string;
   gemini_model:    string;
   local_model:     string;
+  /** Optional domain sent to the local gateway so it hot-swaps the right LoRA
+   *  adapter (e.g. "health"|"retail"|"finance"). Cloud providers ignore it. */
+  local_domain?:   string;
 }
 
 /**

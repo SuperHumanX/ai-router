@@ -14,6 +14,7 @@ export async function* openaiCompatLoop(
   client: OpenAI,
   model:  string,
   params: Omit<AgentLoopParams, "onRoundRobin">,
+  domain?: string,
 ): AsyncGenerator<StreamEvent> {
   const { systemPrompt, messages, tools, maxRounds = 5, toolExecutor } = params;
   const allCitations: unknown[] = [];
@@ -36,13 +37,20 @@ export async function* openaiCompatLoop(
   }));
 
   for (let round = 0; round < maxRounds; round++) {
-    const response = await client.chat.completions.create({
+    const createBody: Record<string, unknown> = {
       model,
       messages:    chatMessages,
       tools:       chatTools.length > 0 ? chatTools : undefined,
       tool_choice: chatTools.length > 0 ? "auto" : undefined,
       max_tokens:  2048,
-    });
+    };
+    // Explicit domain routing for the local gateway: it hot-swaps the matching
+    // LoRA (health/retail/finance). Cloud providers ignore this extra field.
+    if (domain) createBody.domain = domain;
+
+    const response = await client.chat.completions.create(
+      createBody as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
+    );
 
     const choice = response.choices[0];
 
