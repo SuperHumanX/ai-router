@@ -50,8 +50,11 @@ const OLLAMA_DEFAULT_BASE  = "http://localhost:11434/v1";
 // ── AIRouter ──────────────────────────────────────────────────────────────────
 
 export class AIRouter {
-  // Anthropic uses its own SDK
-  private anthropicClient: Anthropic | null = null;
+  // Anthropic uses its own SDK when a native key is supplied...
+  private anthropicClient:   Anthropic | null = null;
+  // ...or, with only an OpenRouter key, an OpenAI-compat client instead (same
+  // provider slot, different transport — see _runLoop).
+  private anthropicORClient: OpenAI    | null = null;
 
   // One OpenAI client per OpenAI-compat endpoint
   private openaiClient: OpenAI  | null = null;
@@ -66,19 +69,34 @@ export class AIRouter {
   private _cacheExpiry:  number              = 0;
 
   constructor(options: AIRouterOptions) {
-    // Only create clients for providers with credentials / endpoints
+    // Only create clients for providers with credentials / endpoints.
+    // Anthropic/OpenAI prefer a native direct key; if one isn't supplied,
+    // fall back to routing that provider through OpenRouter using
+    // openrouterApiKey — lets a single OPENROUTER_API_KEY power all three
+    // cloud providers with no direct keys at all.
     if (options.anthropicApiKey) {
       this.anthropicClient = new Anthropic({ apiKey: options.anthropicApiKey });
+    } else if (options.openrouterApiKey) {
+      this.anthropicORClient = new OpenAI({
+        apiKey:  options.openrouterApiKey,
+        baseURL: OPENROUTER_BASE,
+      });
     }
     if (options.openaiApiKey) {
       this.openaiClient = new OpenAI({ apiKey: options.openaiApiKey });
+    } else if (options.openrouterApiKey) {
+      this.openaiClient = new OpenAI({
+        apiKey:  options.openrouterApiKey,
+        baseURL: OPENROUTER_BASE,
+      });
     }
-    if (options.geminiApiKey) {
-      // "geminiApiKey" now means an OpenRouter key (BYOK) — the option name
-      // is kept for backward compat, since it still configures "the client
-      // used for the gemini provider slot."
+    if (options.geminiApiKey || options.openrouterApiKey) {
+      // "geminiApiKey" historically means an OpenRouter key (BYOK) — the
+      // option name is kept for backward compat, since it still configures
+      // "the client used for the gemini provider slot." Falls back to the
+      // shared openrouterApiKey if geminiApiKey isn't set separately.
       this.geminiClient = new OpenAI({
-        apiKey:  options.geminiApiKey,
+        apiKey:  options.geminiApiKey ?? options.openrouterApiKey!,
         baseURL: OPENROUTER_BASE,
       });
     }
@@ -124,7 +142,7 @@ export class AIRouter {
 
   private enabledProviders(): Provider[] {
     const enabled: Provider[] = [];
-    if (this.anthropicClient) enabled.push("anthropic");
+    if (this.anthropicClient || this.anthropicORClient) enabled.push("anthropic");
     if (this.openaiClient)    enabled.push("openai");
     if (this.geminiClient)    enabled.push("gemini");
     if (this.localClient)     enabled.push("local");
@@ -133,7 +151,7 @@ export class AIRouter {
 
   private isEnabled(p: Provider): boolean {
     switch (p) {
-      case "anthropic": return !!this.anthropicClient;
+      case "anthropic": return !!this.anthropicClient || !!this.anthropicORClient;
       case "openai":    return !!this.openaiClient;
       case "gemini":    return !!this.geminiClient;
       case "local":     return !!this.localClient;
@@ -272,7 +290,12 @@ export class AIRouter {
     domain?:  string,
   ): AsyncGenerator<StreamEvent> {
     switch (provider) {
-      case "anthropic": return anthropicLoop   (this.anthropicClient!, model, params);
+      case "anthropic":
+        // Native key present -> real Anthropic Messages API. Otherwise ->
+        // OpenRouter's OpenAI-compatible interface (openrouterApiKey fallback).
+        return this.anthropicClient
+          ? anthropicLoop   (this.anthropicClient,   model, params)
+          : openaiCompatLoop(this.anthropicORClient!, model, params);
       case "openai":    return openaiCompatLoop(this.openaiClient!,    model, params);
       case "gemini":    return openaiCompatLoop(this.geminiClient!,    model, params);
       // Only the local gateway consumes `domain` (to hot-swap the right LoRA).

@@ -131,6 +131,15 @@ export interface AIRouterOptions {
   /** Google Gemini API key. Leave empty string to disable. */
   geminiApiKey?:   string;
   /**
+   * OpenRouter API key (BYOK). When anthropicApiKey/openaiApiKey/geminiApiKey
+   * are NOT supplied for a given provider, this key is used as a fallback so
+   * that single key alone can power all three cloud providers via OpenRouter
+   * instead of juggling separate direct keys. Anthropic requests routed this
+   * way go through the OpenAI-compatible loop (OpenRouter's interface),
+   * not the native Anthropic Messages API.
+   */
+  openrouterApiKey?: string;
+  /**
    * Base URL for a local OpenAI-compatible server (Ollama, LM Studio, etc.).
    * Default: http://localhost:11434/v1 (Ollama default).
    * Set to empty string to disable local provider.
