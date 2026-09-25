@@ -1,0 +1,11 @@
+10:19:11 INFO Loaded /Users/mac/Projects/ai-router/.env
+10:19:12 INFO AIGateway ready — mode=auto local=http://100.66.27.15:11435 use_local=yes openrouter=yes gemini=yes(gen-lang-client-0271077908) anthropic=no openai=no intelligent_routing=yes domain_mode=override route_gating=no verify_local=no frontier_policy=weighted experience_store=yes feedback=yes metrics=yes policy_id=deterministic-v1 verifier_id=n/a
+10:19:12 INFO AI Gateway server starting — providers: ['openrouter', 'gemini']
+10:19:12 INFO Listening on http://0.0.0.0:7861
+10:19:12 INFO Clients: set REMOTE_GATEWAY_URL=http://<this-host>:7861
+10:19:23 INFO GET /health
+10:19:23 INFO GET /v1/metrics
+10:19:58 INFO POST /v1/chat  (raw: '/v1/chat')
+10:19:58 INFO routing_decision domain=general task=unclassified route=frontier reason=domain=general predicted_local_success=0.50 (placeholder) < threshold=0.95 for model_hint=smart
+10:20:00 INFO → openrouter/anthropic/claude-sonnet-4.5  tokens=10
+10:20:05 INFO GET /v1/metrics

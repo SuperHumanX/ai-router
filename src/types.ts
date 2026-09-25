@@ -159,3 +159,138 @@ export interface AIRouterOptions {
    */
   configTtlMs?: number;
 }
+
+// ── Intelligent-routing data model types (Phase 10) ──────────────────────────
+//
+// TYPE DEFINITIONS ONLY — mirroring the shape of the Python dataclasses in
+// ai-router's router_policy.py (Phases 1-9), field-for-field, snake_case to
+// match the real JSON these produce. NONE of the decision logic
+// (DeterministicRouterPolicy, DeterministicVerifier, CapabilityFrontierRouter,
+// the domain/model registries, JSONLExperienceStore, JSONLFeedbackStore, the
+// redaction functions, etc.) is ported here or anywhere in this package —
+// that logic is intentionally Python-only. These interfaces exist so
+// TypeScript/Node tooling (e.g. a future dashboard reading
+// data/experience_traces.jsonl or data/experience_feedback.jsonl) gets type
+// safety over that JSON without a hand-maintained parallel implementation of
+// the routing/verification/frontier-selection behavior itself. AIRouter (this
+// package's actual router class) does not use or reference any of these.
+
+/** Mirrors router_policy.py's RoutingDecision. */
+export interface RoutingDecision {
+  domain: string;
+  subdomain: string | null;
+  task: string;
+  complexity: number;            // 0..1
+  risk: number;                  // 0..1
+  predicted_local_success: number; // 0..1
+  selected_adapter: string | null;
+  required_capabilities: string[];
+  quality_threshold: number;
+  route: "local" | "frontier";
+  reason: string;
+  router_version: string;
+  /** DomainConfig.adapter_version for the resolved domain — the real
+   *  version string (e.g. "v3"), NOT the adapter name (selected_adapter
+   *  already covers that) — null when the domain has no adapter. */
+  adapter_version: string | null;
+}
+
+/** Mirrors router_policy.py's VerificationResult. */
+export interface VerificationResult {
+  accepted: boolean;
+  score: number;
+  confidence: number;
+  failure_reasons: string[];
+  groundedness: number | null;
+  completeness: number | null;
+  policy_risk: string | null;
+  verifier_version: string;
+}
+
+/** Mirrors router_policy.py's ExperienceTrace — one JSON line in
+ *  data/experience_traces.jsonl when AI_ROUTER_EXPERIENCE_STORE is on.
+ *  request/local_response/frontier_response's actual shape depends on the
+ *  redact_mode that was active when the trace was written ("full" ->
+ *  length+hash placeholder strings; "partial"/"none" -> real
+ *  structure/text) — typed loosely (unknown/string) rather than as a
+ *  discriminated union, since the mode isn't itself a trace field. */
+export interface ExperienceTrace {
+  trace_id: string;
+  timestamp: string;             // ISO 8601
+  client_app: string;
+  request: unknown;
+  context_metadata: {
+    model_hint: string;
+    domain_mode: string;
+    force_frontier: boolean;
+  };
+  routing_decision: RoutingDecision;
+  adapter_version: string | null;
+  model_versions: { local: string | null; frontier: string | null };
+  local_response: string | null;
+  local_latency_ms: number | null;
+  local_tokens: number | null;
+  verification: VerificationResult | null;
+  escalated: boolean;
+  escalation_reason: string | null;
+  frontier_provider: string | null;
+  frontier_model: string | null;
+  frontier_response: string | null;
+  frontier_latency_ms: number | null;
+  frontier_tokens: number | null;
+  frontier_cost: number | null;
+  tool_calls: unknown[];
+  errors: string[];
+  /** Always null on the trace itself — real feedback is a separate,
+   *  append-only FeedbackRecord joined by trace_id, not written back here.
+   *  See FeedbackRecord below. */
+  user_feedback: null;
+  final_source: "local" | "frontier";
+  /** "capability-v1" | "weighted-v1" | null (null when the request never
+   *  reached frontier selection at all — local succeeded). */
+  frontier_router_version: string | null;
+}
+
+/** Mirrors router_policy.py's FeedbackRecord — one JSON line in
+ *  data/experience_feedback.jsonl, correlated to an ExperienceTrace by
+ *  trace_id (joined at read time, e.g. by training/compute_metrics.py —
+ *  not stored on the trace itself). */
+export interface FeedbackRecord {
+  feedback_id: string;
+  trace_id: string;
+  timestamp: string;             // ISO 8601
+  label: "correct" | "incorrect" | "unrated";
+  note: string | null;
+  client_app: string;
+}
+
+/** Mirrors router_policy.py's DomainConfig (the Phase 2 domain registry). */
+export interface DomainConfig {
+  name: string;
+  adapter_name: string | null;
+  adapter_version: string | null;
+  supported_tasks: string[];
+  local_model: string;
+  tools: string[];
+  retrieval_config: unknown | null;
+  default_quality_threshold: number;
+  risk_constraints: unknown | null;
+  /** Real offline benchmark (e.g. execution accuracy), if measured. */
+  benchmark_success_rate: number | null;
+  keywords: string[];
+}
+
+/** Mirrors router_policy.py's ModelCapability (the Phase 5 model registry). */
+export interface ModelCapability {
+  provider: string;
+  model: string;
+  reasoning: number;
+  coding: number;
+  tool_use: number;
+  structured_output: number;
+  long_context: number;
+  modalities: string[];
+  cost_per_1k_tokens: number;
+  avg_latency_ms: number;
+  available: boolean;
+}

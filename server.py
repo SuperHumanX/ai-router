@@ -3,20 +3,38 @@
 server.py — AI Gateway HTTP Server
 ====================================
 Exposes the AI router as a lightweight HTTP API so remote machines (e.g. GCP)
-can forward LLM calls here over Tailscale without holding any API keys themselves.
+or other local clients (Phase 10: CatalogValidator/portfolio_tracker/physician,
+opted in via REMOTE_GATEWAY_URL) can forward LLM calls here over Tailscale or
+localhost without holding any API keys or intelligent-routing code themselves.
 
 Usage (run on the machine that holds the API keys):
     python3 server.py                  # listens 0.0.0.0:7861
     python3 server.py --port 7862
     python3 server.py --host 100.x.x.x --port 7861   # Tailscale IP only
 
-Clients set REMOTE_GATEWAY_URL=http://<tailscale-ip>:7861 in their .env.
+Clients set REMOTE_GATEWAY_URL=http://<host>:7861 in their .env — gateway.py's
+own AIGateway forwards every applicable method (chat, complete_with_meta,
+record_feedback, get_metrics_snapshot) here automatically once that's set;
+see gateway.py's Phase 10 section for exactly which paths do and don't check
+it (complete_with_meta's skip_local=False path already goes through chat()).
 
 Endpoints
 ---------
   POST /v1/chat
     Body:   {messages, system, model_hint, max_tokens, tools?, provider?, model_override?}
     Return: {text, provider, model, tokens?}
+
+  POST /v1/complete_with_meta
+    Body:   {system, user, task?, max_tokens?, skip_local?}
+    Return: {text, provider, model} or {error: "..."} if complete_with_meta()
+            returned None (total failure — an expected outcome, not a 500)
+
+  POST /v1/record_feedback
+    Body:   {trace_id, label, note?}
+    Return: {ok: bool}
+
+  GET  /v1/metrics
+    Return: router.get_metrics_snapshot()'s dict directly
 
   GET  /health
     Return: {"ok": true, "providers": ["anthropic", "openai"]}
@@ -97,24 +115,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/health" or path.endswith("/health"):
             providers = router._cloud_providers()
             self._send_json({"ok": True, "providers": providers})
+        elif path == "/v1/metrics" or path.endswith("/v1/metrics"):
+            try:
+                self._send_json(router.get_metrics_snapshot())
+            except Exception as e:
+                log.warning("metrics error: %s", e)
+                self._send_error_json(str(e), 500)
         else:
             self._send_error_json(f"Not found (got path: {self.path!r})", 404)
 
     def do_POST(self):
         path = self._clean_path()
         log.info("POST %s  (raw: %r)", path, self.path)
-        # Accept /v1/chat (canonical) or / (sent by older clients that omit the path).
-        # Server is Tailscale-only so being permissive here is safe.
-        if path not in ("/v1/chat", "") and not path.endswith("/v1/chat"):
-            log.warning("Unrecognised POST path: %r", self.path)
-            self._send_error_json(f"Not found (got path: {self.path!r})", 404)
-            return
         try:
             body = self._read_json()
         except Exception as e:
             self._send_error_json(f"Invalid JSON: {e}", 400)
             return
 
+        # Accept /v1/chat (canonical) or / (sent by older clients that omit the
+        # path) as the same endpoint — Server is Tailscale/localhost-only so
+        # being permissive here is safe.
+        if path in ("/v1/chat", "") or path.endswith("/v1/chat"):
+            self._handle_chat(body)
+        elif path == "/v1/complete_with_meta" or path.endswith("/v1/complete_with_meta"):
+            self._handle_complete_with_meta(body)
+        elif path == "/v1/record_feedback" or path.endswith("/v1/record_feedback"):
+            self._handle_record_feedback(body)
+        else:
+            log.warning("Unrecognised POST path: %r", self.path)
+            self._send_error_json(f"Not found (got path: {self.path!r})", 404)
+
+    def _handle_chat(self, body: dict) -> None:
         try:
             messages = [ChatMessage(**m) for m in body["messages"]]
             result = router.chat(
@@ -135,6 +167,39 @@ class GatewayHandler(BaseHTTPRequestHandler):
             })
         except Exception as e:
             log.warning("chat error: %s", e)
+            self._send_error_json(str(e), 500)
+
+    def _handle_complete_with_meta(self, body: dict) -> None:
+        try:
+            result = router.complete_with_meta(
+                system=body["system"],
+                user=body["user"],
+                task=body.get("task", "general"),
+                max_tokens=int(body.get("max_tokens", 800)),
+                skip_local=bool(body.get("skip_local", False)),
+            )
+            if result is None:
+                # A None return is complete_with_meta()'s own "total failure"
+                # signal — an expected outcome, not a server error.
+                self._send_json({"error": "complete_with_meta() returned None (total failure)"})
+                return
+            text, provider, model = result
+            log.info("→ complete_with_meta %s/%s", provider, model)
+            self._send_json({"text": text, "provider": provider, "model": model})
+        except Exception as e:
+            log.warning("complete_with_meta error: %s", e)
+            self._send_error_json(str(e), 500)
+
+    def _handle_record_feedback(self, body: dict) -> None:
+        try:
+            ok = router.record_feedback(
+                trace_id=body["trace_id"],
+                label=body["label"],
+                note=body.get("note"),
+            )
+            self._send_json({"ok": ok})
+        except Exception as e:
+            log.warning("record_feedback error: %s", e)
             self._send_error_json(str(e), 500)
 
 

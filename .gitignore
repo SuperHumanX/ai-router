@@ -4,3 +4,6 @@ dist/
 .env
 .env.*
 !.env.example
+data/
+training/datasets/
+training/reports/
